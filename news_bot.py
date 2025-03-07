@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Bot configuration (set these as environment variables)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_ID = -1002336450435
+CHANNEL_ID = YOUR_CHANNEL_ID
 NEWS_CHECK_INTERVAL = 3600  # Check for news every hour (in seconds)
 
 # File to store posted news to avoid duplicates
