@@ -62,7 +62,7 @@ The bot logs activities such as fetching news, errors, and posted articles. Logs
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the [GNU GENERAL PUBLIC LICENSE](https://github.com/thisisryem/Crypto-News-Bot/blob/main/LICENSE)
 
 ## Contributing
 
