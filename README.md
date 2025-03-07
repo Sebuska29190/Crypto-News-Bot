@@ -36,7 +36,6 @@ Crypto News Bot is a Telegram bot that fetches and posts the latest cryptocurren
 
    ```sh
    export BOT_TOKEN='your-telegram-bot-token'
-   export CHANNEL_ID='your-telegram-channel-id'
    ```
 
 4. Run the bot:
