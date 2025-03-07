@@ -70,6 +70,7 @@ Feel free to open issues or submit pull requests to improve the bot.
 
 ## Author
 
-[Jabir Ahmad Ryem](https://github.com/thisisryem)
-[Instagram](https;//instagram.com/thisisryem)
+- [Jabir Ahmad Ryem](https://github.com/thisisryem)
+
+- [Instagram](https;//instagram.com/thisisryem)
 
