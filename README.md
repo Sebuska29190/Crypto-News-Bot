@@ -22,7 +22,7 @@ Crypto News Bot is a Telegram bot that fetches and posts the latest cryptocurren
 1. Clone the repository:
 
    ```sh
-   git clone https://github.com/yourusername/crypto-news-bot.git
+   git clone https://github.com/thisisryem/crypto-news-bot.git
    cd crypto-news-bot
    ```
 
@@ -70,5 +70,6 @@ Feel free to open issues or submit pull requests to improve the bot.
 
 ## Author
 
-[Your Name](https://github.com/yourusername)
+[Jabir Ahmad Ryem](https://github.com/thisisryem)
+[Instagram](https;//instagram.com/thisisryem)
 
