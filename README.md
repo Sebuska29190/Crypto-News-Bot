@@ -52,7 +52,7 @@ Crypto News Bot is a Telegram bot that fetches and posts the latest cryptocurren
 
 ## Usage
 
-- **Start the bot**: Run `python news_bot.py`.
+- **Start the bot**: Run `python main.py`.
 - **Check news manually**: Send `/checknews` command in the Telegram bot chat.
 - **Stop the bot**: Use `CTRL + C` in the terminal.
 
