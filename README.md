@@ -74,3 +74,4 @@ Feel free to open issues or submit pull requests to improve the bot.
 
 - [Instagram](https;//instagram.com/thisisryem)
 
+- [Follow me in Github](https://github.com/thisisryem)
