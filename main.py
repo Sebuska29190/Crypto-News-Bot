@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 # Bot configuration (set these as environment variables)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_ID = -1002336450435 #YOUR_CHANNEL_ID
 NEWS_CHECK_INTERVAL = 3600  # Check for news every hour (in seconds)
 
 # File to store posted news to avoid duplicates
@@ -36,7 +35,8 @@ USER_AGENTS = [
 ]
 
 class CryptoNewsBot:
-    def __init__(self):
+    def __init__(self, channel_id):
+        self.channel_id = channel_id
         self.application = ApplicationBuilder().token(BOT_TOKEN).build()
         self.posted_news = self.load_posted_news()
 
@@ -46,7 +46,7 @@ class CryptoNewsBot:
             with open(POSTED_NEWS_FILE, 'r') as f:
                 return json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
-            logger.info(f"No existing posted news file found or file is invalid. Creating new tracking.")
+            logger.info("No existing posted news file found or file is invalid. Creating new tracking.")
             return {}
 
     def save_posted_news(self):
@@ -74,113 +74,117 @@ class CryptoNewsBot:
             'Cache-Control': 'max-age=0'
         }
 
+    async def fetch_article_content(self, session, url):
+        """Fetch the full HTML content of a single article page"""
+        try:
+            headers = self.get_headers()
+            async with session.get(url, headers=headers, timeout=30) as response:
+                if response.status == 200:
+                    return await response.text()
+                else:
+                    logger.warning(f"Failed to fetch article content from {url}, status code: {response.status}")
+                    return None
+        except aiohttp.ClientError as e:
+            logger.error(f"Network error fetching article content: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error fetching article content: {e}")
+            logger.error(traceback.format_exc())
+            return None
+
+    def extract_summary(self, html_content, source):
+        """Extracts a summary from the article's HTML content"""
+        if not html_content:
+            return None
+        
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        summary_text = None
+        
+        if source == 'CoinDesk':
+            # Try specific selectors for CoinDesk article summaries
+            selectors = [
+                'p[data-testid="lede"]',  # Primary lead paragraph on CoinDesk
+                '.lede',
+                '.summary-paragraph',
+                'p'  # Fallback to the first paragraph
+            ]
+            for selector in selectors:
+                summary_elem = soup.select_one(selector)
+                if summary_elem and summary_elem.text.strip():
+                    summary_text = summary_elem.text.strip()
+                    break
+        elif source == 'CoinTelegraph':
+            # Try specific selectors for CoinTelegraph article summaries
+            selectors = [
+                '.post-content__lead',
+                '.post-content_lead',
+                '.lead',
+                '.article__teaser',
+                'p' # Fallback to the first paragraph
+            ]
+            for selector in selectors:
+                summary_elem = soup.select_one(selector)
+                if summary_elem and summary_elem.text.strip():
+                    summary_text = summary_elem.text.strip()
+                    break
+        
+        # Clean and shorten the summary
+        if summary_text:
+            summary_text = summary_text.replace('\n', ' ').replace('\t', ' ').strip()
+            # Trim to a reasonable length
+            if len(summary_text) > 300:
+                summary_text = summary_text[:300] + '...'
+        
+        return summary_text
+
     async def fetch_coindesk_news(self):
         """Fetch news from CoinDesk"""
         news_items = []
         async with aiohttp.ClientSession() as session:
             try:
                 logger.info("Fetching news from CoinDesk...")
-                # Try the main Bitcoin tag page
                 headers = self.get_headers()
                 async with session.get("https://www.coindesk.com/tag/bitcoin/", headers=headers, timeout=30) as response:
                     if response.status == 200:
                         html = await response.text()
-                        logger.debug(f"Received {len(html)} bytes from CoinDesk")
-
                         soup = BeautifulSoup(html, 'html.parser')
 
-                        # For debugging - save HTML to file to analyze structure
-                        if logger.level == logging.DEBUG:
-                            with open("coindesk_debug.html", "w", encoding="utf-8") as f:
-                                f.write(html)
-                            logger.debug("Saved CoinDesk HTML to coindesk_debug.html for analysis")
-
-                        # First try standard article tags
                         articles = soup.select('article')
-
-                        # If no articles found, try other common containers
                         if not articles:
                             articles = soup.select('.article-card, .story-card, .post-card, .featured-post, .story-module, .story, .post, .card')
 
                         logger.info(f"Found {len(articles)} articles on CoinDesk")
 
-                        if not articles:
-                            # Try a different approach - find all links with titles that might be articles
-                            potential_articles = soup.select('a[href*="/bitcoin/"], a[href*="/markets/"]')
-                            logger.info(f"Trying alternative method, found {len(potential_articles)} potential articles")
-
-                            for link in potential_articles[:15]:  # Process top 15 potential articles
-                                try:
-                                    href = link.get('href')
-                                    # Skip if not a proper article link
-                                    if not href or '/tag/' in href or '#' in href:
-                                        continue
-
-                                    # Try to find a title within or near the link
-                                    title_elem = link.find(text=True, recursive=True)
-                                    if not title_elem:
-                                        # Try parent or sibling elements
-                                        parent = link.parent
-                                        title_elem = parent.find(text=True, recursive=True)
-
-                                    title = title_elem.strip() if title_elem else None
-
-                                    # Make sure link is absolute
-                                    if href and not href.startswith('http'):
-                                        href = f"https://www.coindesk.com{href}"
-
-                                    if title and href and len(title) > 15:  # Filter out too short titles
-                                        # Skip navigation links and other non-article content
-                                        if any(skip in title.lower() for skip in ['contact', 'about us', 'advertise', 'sign up', 'log in']):
-                                            continue
-
-                                        news_items.append({
-                                            'title': title,
-                                            'link': href,
-                                            'source': 'CoinDesk'
-                                        })
-                                except Exception as e:
-                                    logger.debug(f"Error processing potential CoinDesk article: {e}")
-                                    continue
-
-                        # Process regular articles if found
                         for article in articles[:10]:
                             try:
-                                # Try various title selectors that might match current structure
                                 title_elem = None
                                 for selector in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', '.headline', '.title', '.card-title', '[data-testid="title"]']:
                                     title_elem = article.select_one(selector)
                                     if title_elem and title_elem.text.strip():
                                         break
-
-                                # Try different link selectors
+                                
                                 link_elem = None
                                 for selector in ['a', 'a.headline-link', '.card a', '[data-testid="title-link"]']:
                                     link_elem = article.select_one(selector)
                                     if link_elem and link_elem.get('href'):
                                         break
 
-                                if not title_elem and not link_elem:
-                                    # Last resort: if article has a direct link
-                                    if article.name == 'a' and article.get('href'):
-                                        link_elem = article
-                                        # Try to extract text from the article itself
-                                        title_elem = article
-
-                                # Extract title and link safely
                                 title = title_elem.text.strip() if title_elem else None
                                 link = link_elem.get('href') if link_elem else None
-
-                                # Make sure link is absolute
                                 if link and not link.startswith('http'):
                                     link = f"https://www.coindesk.com{link}"
 
-                                if title and link and len(title) > 10:  # Ensure minimum title length
-                                    logger.debug(f"Found article: {title[:30]}... - {link}")
+                                if title and link and len(title) > 10:
+                                    # FETCH SUMMARY FOR EACH ARTICLE
+                                    article_html = await self.fetch_article_content(session, link)
+                                    summary = self.extract_summary(article_html, 'CoinDesk')
+
                                     news_items.append({
                                         'title': title,
                                         'link': link,
-                                        'source': 'CoinDesk'
+                                        'source': 'CoinDesk',
+                                        'summary': summary
                                     })
                                 else:
                                     logger.debug(f"Skipping article with missing/invalid title or link")
@@ -189,60 +193,12 @@ class CryptoNewsBot:
                                 continue
                     else:
                         logger.warning(f"Failed to fetch from CoinDesk, status code: {response.status}")
-
-                # If no news found on tag page, try the main markets page
-                if not news_items:
-                    logger.info("Trying CoinDesk markets page...")
-                    headers = self.get_headers()  # Get fresh headers
-                    async with session.get("https://www.coindesk.com/markets/", headers=headers, timeout=30) as response:
-                        if response.status == 200:
-                            html = await response.text()
-                            logger.debug(f"Received {len(html)} bytes from CoinDesk markets page")
-
-                            soup = BeautifulSoup(html, 'html.parser')
-
-                            # Try various container selectors
-                            articles = soup.select('article, .article-card, .story-card, .post-card, .card')
-                            logger.info(f"Found {len(articles)} articles on CoinDesk markets page")
-
-                            for article in articles[:10]:
-                                try:
-                                    # Extract title and link using same logic as above
-                                    title_elem = None
-                                    for selector in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', '.headline', '.title', '.card-title']:
-                                        title_elem = article.select_one(selector)
-                                        if title_elem and title_elem.text.strip():
-                                            break
-
-                                    link_elem = article.select_one('a')
-
-                                    title = title_elem.text.strip() if title_elem else None
-                                    link = link_elem.get('href') if link_elem else None
-
-                                    # Make sure link is absolute
-                                    if link and not link.startswith('http'):
-                                        link = f"https://www.coindesk.com{link}"
-
-                                    if title and link and len(title) > 10:
-                                        # Only add bitcoin-related news
-                                        title_lower = title.lower()
-                                        if 'bitcoin' in title_lower or 'btc' in title_lower or 'crypto' in title_lower:
-                                            news_items.append({
-                                                'title': title,
-                                                'link': link,
-                                                'source': 'CoinDesk'
-                                            })
-                                except Exception as e:
-                                    logger.error(f"Error processing CoinDesk markets article: {e}")
-                                    continue
-                        else:
-                            logger.warning(f"Failed to fetch from CoinDesk markets page, status code: {response.status}")
             except aiohttp.ClientError as e:
                 logger.error(f"Network error fetching CoinDesk news: {e}")
             except Exception as e:
                 logger.error(f"Unexpected error fetching CoinDesk news: {e}")
                 logger.error(traceback.format_exc())
-
+        
         logger.info(f"Retrieved {len(news_items)} news items from CoinDesk")
         return news_items
 
@@ -252,113 +208,44 @@ class CryptoNewsBot:
         async with aiohttp.ClientSession() as session:
             try:
                 logger.info("Fetching news from CoinTelegraph...")
-                # Add user-agent and other headers to mimic browser
                 headers = self.get_headers()
                 async with session.get("https://cointelegraph.com/tags/bitcoin", headers=headers, timeout=30) as response:
                     if response.status == 200:
                         html = await response.text()
-                        logger.debug(f"Received {len(html)} bytes from CoinTelegraph")
-
                         soup = BeautifulSoup(html, 'html.parser')
 
-                        # For debugging - save HTML to file
-                        if logger.level == logging.DEBUG:
-                            with open("cointelegraph_debug.html", "w", encoding="utf-8") as f:
-                                f.write(html)
-                            logger.debug("Saved CoinTelegraph HTML to cointelegraph_debug.html for analysis")
-
-                        # Try different article selectors
                         articles = soup.select('.post-card-inline, .post-card, article, .posts-listing__item')
 
-                        # If nothing found, try more generic selectors
                         if not articles:
                             articles = soup.select('.card, .news-item, .article, .post, .story')
 
                         logger.info(f"Found {len(articles)} articles on CoinTelegraph")
 
-                        if not articles:
-                            # Try alternative approach - find main list containers
-                            containers = soup.select('.posts-listing, .articles-list, .news-feed, main, .content')
-
-                            if containers:
-                                # Extract links from containers that might be articles
-                                for container in containers:
-                                    links = container.select('a[href*="/news/"], a[href*="/bitcoin/"]')
-                                    logger.info(f"Found {len(links)} potential article links in container")
-
-                                    for link in links[:15]:
-                                        try:
-                                            href = link.get('href')
-
-                                            # Skip navigation links
-                                            if not href or '/tags/' in href or '#' in href:
-                                                continue
-
-                                            # Try to find title
-                                            title = None
-
-                                            # First look for title in link text
-                                            if link.text and link.text.strip():
-                                                title = link.text.strip()
-
-                                            # If no title in link text, try child elements
-                                            if not title:
-                                                title_elem = link.select_one('h1, h2, h3, h4, h5, h6, .title, .heading')
-                                                if title_elem:
-                                                    title = title_elem.text.strip()
-
-                                            # If still no title, look in parent elements
-                                            if not title:
-                                                parent = link.parent
-                                                title_elem = parent.select_one('h1, h2, h3, h4, h5, h6, .title, .heading')
-                                                if title_elem:
-                                                    title = title_elem.text.strip()
-
-                                            # Make sure link is absolute
-                                            if href and not href.startswith('http'):
-                                                href = f"https://cointelegraph.com{href}"
-
-                                            if title and href and len(title) > 15:
-                                                # Skip navigation and non-article content
-                                                if any(skip in title.lower() for skip in ['contact', 'about us', 'advertise', 'sign up', 'log in']):
-                                                    continue
-
-                                                news_items.append({
-                                                    'title': title,
-                                                    'link': href,
-                                                    'source': 'CoinTelegraph'
-                                                })
-                                        except Exception as e:
-                                            logger.debug(f"Error processing potential CoinTelegraph article link: {e}")
-                                            continue
-
-                        # Process regular articles if found
                         for article in articles[:10]:
                             try:
-                                # Try different title selectors
                                 title_elem = None
                                 for selector in ['.post-card-inline__title', '.post-card__title', 'h1', 'h2', 'h3', 'h4', '.title', '.headline']:
                                     title_elem = article.select_one(selector)
                                     if title_elem and title_elem.text.strip():
                                         break
-
-                                # Try to find link
+                                
                                 link_elem = article.select_one('a')
 
-                                # Extract title and link safely
                                 title = title_elem.text.strip() if title_elem else None
                                 link = link_elem.get('href') if link_elem else None
-
-                                # Make sure link is absolute
                                 if link and not link.startswith('http'):
                                     link = f"https://cointelegraph.com{link}"
 
                                 if title and link and len(title) > 10:
-                                    logger.debug(f"Found article: {title[:30]}... - {link}")
+                                    # FETCH SUMMARY FOR EACH ARTICLE
+                                    article_html = await self.fetch_article_content(session, link)
+                                    summary = self.extract_summary(article_html, 'CoinTelegraph')
+                                    
                                     news_items.append({
                                         'title': title,
                                         'link': link,
-                                        'source': 'CoinTelegraph'
+                                        'source': 'CoinTelegraph',
+                                        'summary': summary
                                     })
                                 else:
                                     logger.debug(f"Skipping article with missing/invalid title or link")
@@ -367,60 +254,15 @@ class CryptoNewsBot:
                                 continue
                     else:
                         logger.warning(f"Failed to fetch from CoinTelegraph, status code: {response.status}")
-
-                # If no articles found or access was denied, try the homepage as fallback
-                if not news_items or response.status == 403:
-                    logger.info("Trying CoinTelegraph homepage as fallback...")
-                    # Get fresh headers and add a delay to avoid detection
-                    await asyncio.sleep(2)
-                    headers = self.get_headers()
-                    async with session.get("https://cointelegraph.com/", headers=headers, timeout=30) as response:
-                        if response.status == 200:
-                            html = await response.text()
-                            logger.debug(f"Received {len(html)} bytes from CoinTelegraph homepage")
-
-                            soup = BeautifulSoup(html, 'html.parser')
-
-                            # Find all news items on homepage
-                            articles = soup.select('article, .post-card, .news-card, .article-card')
-                            logger.info(f"Found {len(articles)} articles on CoinTelegraph homepage")
-
-                            for article in articles[:10]:
-                                try:
-                                    title_elem = article.select_one('h1, h2, h3, h4, h5, h6, .title, .headline')
-                                    link_elem = article.select_one('a')
-
-                                    title = title_elem.text.strip() if title_elem else None
-                                    link = link_elem.get('href') if link_elem else None
-
-                                    # Make sure link is absolute
-                                    if link and not link.startswith('http'):
-                                        link = f"https://cointelegraph.com{link}"
-
-                                    if title and link and len(title) > 10:
-                                        # Only add bitcoin-related news
-                                        title_lower = title.lower()
-                                        if 'bitcoin' in title_lower or 'btc' in title_lower or 'crypto' in title_lower:
-                                            news_items.append({
-                                                'title': title,
-                                                'link': link,
-                                                'source': 'CoinTelegraph'
-                                            })
-                                except Exception as e:
-                                    logger.error(f"Error processing CoinTelegraph homepage article: {e}")
-                                    continue
-                        else:
-                            logger.warning(f"Failed to fetch from CoinTelegraph homepage, status code: {response.status}")
             except aiohttp.ClientError as e:
                 logger.error(f"Network error fetching CoinTelegraph news: {e}")
             except Exception as e:
                 logger.error(f"Unexpected error fetching CoinTelegraph news: {e}")
                 logger.error(traceback.format_exc())
-
+        
         logger.info(f"Retrieved {len(news_items)} news items from CoinTelegraph")
         return news_items
 
-    # Other methods (is_news_posted, mark_as_posted, clean_old_posts, etc.) remain the same
     def is_news_posted(self, news_item):
         """Check if news has been posted before by creating a unique hash"""
         try:
@@ -455,7 +297,6 @@ class CryptoNewsBot:
             for news_hash, data in self.posted_news.items():
                 try:
                     if not isinstance(data, dict) or 'timestamp' not in data:
-                        # Fix corrupted entries
                         to_remove.append(news_hash)
                         continue
 
@@ -482,12 +323,16 @@ class CryptoNewsBot:
             return False
 
         message = f"📢 *{news_item['source']}* 📢\n\n" \
-                 f"*{news_item['title']}*\n\n" \
-                 f"[Read more]({news_item['link']})"
+                 f"*{news_item['title']}*\n\n"
+
+        if news_item.get('summary'):
+            message += f"{news_item['summary']}\n\n"
+
+        message += f"[Read more]({news_item['link']})"
 
         try:
             await self.application.bot.send_message(
-                chat_id=CHANNEL_ID,
+                chat_id=self.channel_id,
                 text=message,
                 parse_mode=telegram.constants.ParseMode.MARKDOWN,
                 disable_web_page_preview=True
@@ -503,44 +348,20 @@ class CryptoNewsBot:
     async def check_and_post_news(self):
         """Check for new crypto news and post them"""
         try:
-            # Clean old posts periodically
             self.clean_old_posts()
-
-            # Fetch news from different sources
             coindesk_news = await self.fetch_coindesk_news()
             cointelegraph_news = await self.fetch_cointelegraph_news()
-
-            # Validate news items are in correct format
-            valid_coindesk_news = []
-            valid_cointelegraph_news = []
-
-            for news in coindesk_news:
-                if isinstance(news, dict) and all(k in news for k in ['title', 'link', 'source']):
-                    valid_coindesk_news.append(news)
-                else:
-                    logger.warning(f"Invalid news item format from CoinDesk: {news}")
-
-            for news in cointelegraph_news:
-                if isinstance(news, dict) and all(k in news for k in ['title', 'link', 'source']):
-                    valid_cointelegraph_news.append(news)
-                else:
-                    logger.warning(f"Invalid news item format from CoinTelegraph: {news}")
-
-            # Combine news from all sources
-            all_news = valid_coindesk_news + valid_cointelegraph_news
+            
+            all_news = coindesk_news + cointelegraph_news
             logger.info(f"Total valid news items: {len(all_news)}")
 
-            # Post only new news
             posts_count = 0
             for news_item in all_news:
                 if not self.is_news_posted(news_item):
                     success = await self.post_news_to_channel(news_item)
                     if success:
                         posts_count += 1
-                    # Add a small delay between posts to avoid flooding
                     await asyncio.sleep(2)
-
-                    # Limit to posting maximum 5 news items at once
                     if posts_count >= 5:
                         break
 
@@ -568,57 +389,53 @@ class CryptoNewsBot:
                 logger.info(f"Next check in {NEWS_CHECK_INTERVAL} seconds")
             except Exception as e:
                 logger.error(f"Error in scheduled news check: {e}")
-
+            
             await asyncio.sleep(NEWS_CHECK_INTERVAL)
 
 async def main():
-    # Check if the token is set
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN environment variable is not set!")
         return
-
-    if not CHANNEL_ID:
+    
+    CHANNEL_ID_STR = os.environ.get("CHANNEL_ID")
+    if not CHANNEL_ID_STR:
         logger.error("CHANNEL_ID environment variable is not set!")
         return
-
-    # Initialize bot
-    bot = CryptoNewsBot()
-
-    # Register command handlers
-    bot.application.add_handler(CommandHandler("checknews", bot.cmd_check_news))
-
-    # Start the bot
-    logger.info("Starting bot...")
-
-    news_check_task = None
-
+    
     try:
-        # Start the application
+        CHANNEL_ID = int(CHANNEL_ID_STR)
+    except (ValueError, TypeError):
+        logger.error("CHANNEL_ID is not a valid integer. Please check your environment variable.")
+        return
+
+    bot = CryptoNewsBot(channel_id=CHANNEL_ID)
+    bot.application.add_handler(CommandHandler("checknews", bot.cmd_check_news))
+    
+    logger.info("Starting bot...")
+    
+    news_check_task = None
+    
+    try:
         await bot.application.initialize()
         await bot.application.start()
         await bot.application.updater.start_polling()
 
-        # Run initial news check
         logger.info("Running initial news check...")
         await bot.check_and_post_news()
-
-        # Start scheduled news checks
+        
         logger.info("Starting scheduled news checks...")
         news_check_task = asyncio.create_task(bot.scheduled_news_check())
 
-        # Keep the program running
         while True:
             await asyncio.sleep(60)
-
+            
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopping...")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         logger.error(traceback.format_exc())
     finally:
-        # Clean up
         try:
-            # Cancel the news check task if it exists
             if news_check_task and not news_check_task.done():
                 news_check_task.cancel()
                 try:
@@ -626,7 +443,6 @@ async def main():
                 except asyncio.CancelledError:
                     pass
 
-            # Shutdown the application
             if hasattr(bot, 'application'):
                 if hasattr(bot.application, 'updater'):
                     await bot.application.updater.stop()
@@ -636,5 +452,4 @@ async def main():
             logger.error(f"Error during shutdown: {e}")
 
 if __name__ == "__main__":
-    # Run the main function properly with asyncio
     asyncio.run(main())
